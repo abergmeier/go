@@ -191,7 +191,6 @@
 		};
 		if (!global.TextEncoder) {
 			global.TextEncoder = polyfillTextEncoder();
-			TextEncoder = global.TextEncoder;
 		}
 		const polyfillTextDecoder = () => {
 			// Shameless plug from https://github.com/samthor/fast-text-encoding/blob/master/text.js
@@ -254,7 +253,6 @@
 
 		if (!global.TextDecoder) {
 			global.TextDecoder = polyfillTextDecoder();
-			TextDecoder = global.TextDecoder;
 		}
 	}
 
@@ -306,7 +304,7 @@
 	if (!global.performance) {
 		global.performance = {
 			now() {
-				const [sec, nsec] = process.hrtime();
+				const [sec, nsec] = global.process.hrtime();
 				return sec * 1000 + nsec / 1000000;
 			},
 		};
@@ -322,8 +320,8 @@
 
 	// End of polyfills for common API.
 
-	const encoder = new TextEncoder("utf-8");
-	const decoder = new TextDecoder("utf-8");
+	const encoder = new global.TextEncoder("utf-8");
+	const decoder = new global.TextDecoder("utf-8");
 
 	global.Go = class {
 		constructor() {
@@ -437,7 +435,7 @@
 				return decoder.decode(new DataView(this._inst.exports.mem.buffer, saddr, len));
 			}
 
-			const timeOrigin = Date.now() - performance.now();
+			const timeOrigin = Date.now() - global.performance.now();
 			this.importObject = {
 				go: {
 					// Go's SP does not change as long as no Go code is running. Some operations (e.g. calls, getters and setters)
@@ -762,9 +760,9 @@
 		}
 
 		const go = new Go();
-		go.argv = process.argv.slice(2);
-		go.env = Object.assign({ TMPDIR: require("os").tmpdir() }, process.env);
-		go.exit = process.exit;
+		go.argv = global.process.argv.slice(2);
+		go.env = Object.assign({ TMPDIR: require("os").tmpdir() }, global.process.env);
+		go.exit = global.process.exit;
 		WebAssembly.instantiate(fs.readFileSync(process.argv[2]), go.importObject).then((result) => {
 			process.on("exit", (code) => { // Node.js exits if no event handler is pending
 				if (code === 0 && !go.exited) {
