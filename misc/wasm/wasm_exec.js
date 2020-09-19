@@ -778,3 +778,11 @@
 		});
 	}
 })();
+
+var Go;
+
+// GJS needs explicit wiring
+if (typeof imports !== "undefined" && typeof imports.misc !== "undefined" &&
+	typeof imports.misc.extensionUtils !== "undefined") {
+	Go = global.Go;
+}
