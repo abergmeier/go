@@ -24,38 +24,9 @@
 		throw new Error("cannot export Go (neither global, window nor self is defined)");
 	}
 
-	// Handle GJS
-	if (typeof imports !== "undefined" && typeof imports.misc !== "undefined" &&
-		typeof imports.misc.extensionUtils !== "undefined") {
-		const ExtensionUtils = imports.misc.extensionUtils;
-		const Me = ExtensionUtils.getCurrentExtension();
-		if (typeof require !== "undefined") {
-			require = (moduleName) => {
-				return Me.imports[moduleName]
-			}
-		}
-	}
-
-	if (!global.require && typeof require !== "undefined") {
-		global.require = require;
-	}
-
-	if (!global.fs && global.require) {
-		const fs = require("fs");
-		if (typeof fs === "object" && fs !== null && Object.keys(fs).length !== 0) {
-			global.fs = fs;
-		}
-	}
-
-	const enosys = () => {
-		const err = new Error("not implemented");
-		err.code = "ENOSYS";
-		return err;
-	};
-
-	if (!global.fs) {
+	const polyfillFilesystem = () => {
 		let outputBuf = "";
-		global.fs = {
+		return {
 			constants: { O_WRONLY: -1, O_RDWR: -1, O_CREAT: -1, O_TRUNC: -1, O_APPEND: -1, O_EXCL: -1 }, // unused
 			writeSync(fd, buf) {
 				outputBuf += decoder.decode(buf);
@@ -100,6 +71,41 @@
 		};
 	}
 
+	// Handle GJS
+	if (typeof imports !== "undefined" && typeof imports.misc !== "undefined" &&
+		typeof imports.misc.extensionUtils !== "undefined") {
+		const ExtensionUtils = imports.misc.extensionUtils;
+		const Me = ExtensionUtils.getCurrentExtension();
+		if (typeof require !== "undefined") {
+			require = (moduleName) => {
+				return Me.imports[moduleName]
+			}
+		}
+		if (!global.fs) {
+			global.fs = polyfillFilesystem()
+		}
+	}
+
+	if (!global.require && typeof require !== "undefined") {
+		global.require = require;
+	}
+
+	if (!global.fs && global.require) {
+		const fs = require("fs");
+		if (typeof fs === "object" && fs !== null && Object.keys(fs).length !== 0) {
+			global.fs = fs;
+		}
+	}
+
+	const enosys = () => {
+		const err = new Error("not implemented");
+		err.code = "ENOSYS";
+		return err;
+	};
+
+	if (!global.fs) {
+		global.fs = polyfillFilesystem();
+	}
 
 	if (!global.process) {
 		global.process = {
