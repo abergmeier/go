@@ -81,6 +81,22 @@
 				return Me.imports[moduleName]
 			}
 		}
+		const randomFillSync = (function(buffer, offset, size) {
+			if (offset === undefined) offset = 0
+			if (size === undefined) size = buffer.length - offset
+			if (typeof offset !== 'number') throw new TypeError('The "offset" argument must be of type number. Received type ' + typeof offset)
+			if (typeof size !== 'number') throw new TypeError('The "size" argument must be of type number. Received type ' + typeof size)
+			if (size + offset > buffer.length) throw new RangeError('The value of "size + offset" is out of range. It must be <= ' + buffer.length + '. Received ' + (size + offset))
+
+			randomBytes(size).copy(buffer, offset, 0, size)
+		})
+		if (!global.crypto) {
+			global.crypto = {
+				getRandomValues(b) {
+					randomFillSync(b);
+				},
+			};
+		}
 		if (!global.fs) {
 			global.fs = polyfillFilesystem()
 		}
