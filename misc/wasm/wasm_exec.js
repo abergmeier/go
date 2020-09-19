@@ -12,6 +12,7 @@
 	// - Electron
 	// - Parcel
 	// - Webpack
+	// - GJS
 
 	if (typeof global !== "undefined") {
 		// global already exists
@@ -21,6 +22,18 @@
 		self.global = self;
 	} else {
 		throw new Error("cannot export Go (neither global, window nor self is defined)");
+	}
+
+	// Handle GJS
+	if (typeof imports !== "undefined" && typeof imports.misc !== "undefined" &&
+		typeof imports.misc.extensionUtils !== "undefined") {
+		const ExtensionUtils = imports.misc.extensionUtils;
+		const Me = ExtensionUtils.getCurrentExtension();
+		if (typeof require !== "undefined") {
+			require = (moduleName) => {
+				return Me.imports[moduleName]
+			}
+		}
 	}
 
 	if (!global.require && typeof require !== "undefined") {
@@ -86,6 +99,7 @@
 			utimes(path, atime, mtime, callback) { callback(enosys()); },
 		};
 	}
+
 
 	if (!global.process) {
 		global.process = {
