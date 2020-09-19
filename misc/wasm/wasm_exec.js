@@ -12,6 +12,7 @@
 	// - Electron
 	// - Parcel
 	// - Webpack
+	// - GJS
 
 	if (typeof global !== "undefined") {
 		// global already exists
@@ -23,26 +24,9 @@
 		throw new Error("cannot export Go (neither global, window nor self is defined)");
 	}
 
-	if (!global.require && typeof require !== "undefined") {
-		global.require = require;
-	}
-
-	if (!global.fs && global.require) {
-		const fs = require("fs");
-		if (typeof fs === "object" && fs !== null && Object.keys(fs).length !== 0) {
-			global.fs = fs;
-		}
-	}
-
-	const enosys = () => {
-		const err = new Error("not implemented");
-		err.code = "ENOSYS";
-		return err;
-	};
-
-	if (!global.fs) {
+	const polyfillFilesystem = () => {
 		let outputBuf = "";
-		global.fs = {
+		return {
 			constants: { O_WRONLY: -1, O_RDWR: -1, O_CREAT: -1, O_TRUNC: -1, O_APPEND: -1, O_EXCL: -1 }, // unused
 			writeSync(fd, buf) {
 				outputBuf += decoder.decode(buf);
@@ -87,6 +71,212 @@
 		};
 	}
 
+	// Handle GJS
+	if (typeof imports !== "undefined" && typeof imports.misc !== "undefined" &&
+		typeof imports.misc.extensionUtils !== "undefined") {
+		const ExtensionUtils = imports.misc.extensionUtils;
+		const Me = ExtensionUtils.getCurrentExtension();
+		const GLib = imports.gi.GLib;
+		if (typeof require !== "undefined") {
+			require = (moduleName) => {
+				return Me.imports[moduleName]
+			}
+		}
+		const randomFillSync = (function(buffer, offset, size) {
+			if (offset === undefined) offset = 0
+			if (size === undefined) size = buffer.length - offset
+			if (typeof offset !== 'number') throw new TypeError('The "offset" argument must be of type number. Received type ' + typeof offset)
+			if (typeof size !== 'number') throw new TypeError('The "size" argument must be of type number. Received type ' + typeof size)
+			if (size + offset > buffer.length) throw new RangeError('The value of "size + offset" is out of range. It must be <= ' + buffer.length + '. Received ' + (size + offset))
+
+			randomBytes(size).copy(buffer, offset, 0, size)
+		})
+		if (!global.crypto) {
+			global.crypto = {
+				getRandomValues(b) {
+					randomFillSync(b);
+				},
+			};
+		}
+		if (!global.fs) {
+			global.fs = polyfillFilesystem()
+		}
+
+		if (!global.performance) {
+			global.performance = {
+				now() {
+					return GLib.get_monotonic_time();
+				},
+			};
+		}
+		const polyfillTextEncoder = () => {
+			// Shameless plug from https://github.com/samthor/fast-text-encoding/blob/master/text.js
+			/**
+			 * @constructor
+			 */
+			function GLibTextEncoder() {
+				// This does not accept an encoding, and always uses UTF-8:
+				//   https://www.w3.org/TR/encoding/#dom-textencoder
+			}
+			Object.defineProperty(GLibTextEncoder.prototype, 'encoding', {value: 'utf-8'});
+			/**
+			 * @param {string} string
+			 * @param {{stream: boolean}=} options
+			 * @return {!Uint8Array}
+			 */
+			GLibTextEncoder.prototype['encode'] = function(string, options={stream: false}) {
+				if (options.stream) {
+					throw new Error(`Failed to encode: the 'stream' option is unsupported.`);
+				}
+
+				let pos = 0;
+				const len = string.length;
+
+				let at = 0;  // output position
+				let tlen = Math.max(32, len + (len >>> 1) + 7);  // 1.5x size
+				let target = new Uint8Array((tlen >>> 3) << 3);  // ... but at 8 byte offset
+
+				while (pos < len) {
+					let value = string.charCodeAt(pos++);
+					if (value >= 0xd800 && value <= 0xdbff) {
+						// high surrogate
+						if (pos < len) {
+							const extra = string.charCodeAt(pos);
+							if ((extra & 0xfc00) === 0xdc00) {
+								++pos;
+								value = ((value & 0x3ff) << 10) + (extra & 0x3ff) + 0x10000;
+							}
+						}
+						if (value >= 0xd800 && value <= 0xdbff) {
+							continue;  // drop lone surrogate
+						}
+					}
+
+					// expand the buffer if we couldn't write 4 bytes
+					if (at + 4 > target.length) {
+						tlen += 8;  // minimum extra
+						tlen *= (1.0 + (pos / string.length) * 2);  // take 2x the remaining
+						tlen = (tlen >>> 3) << 3;  // 8 byte offset
+
+						const update = new Uint8Array(tlen);
+						update.set(target);
+						target = update;
+					}
+
+					if ((value & 0xffffff80) === 0) {  // 1-byte
+						target[at++] = value;  // ASCII
+						continue;
+					} else if ((value & 0xfffff800) === 0) {  // 2-byte
+						target[at++] = ((value >>>  6) & 0x1f) | 0xc0;
+					} else if ((value & 0xffff0000) === 0) {  // 3-byte
+						target[at++] = ((value >>> 12) & 0x0f) | 0xe0;
+						target[at++] = ((value >>>  6) & 0x3f) | 0x80;
+					} else if ((value & 0xffe00000) === 0) {  // 4-byte
+						target[at++] = ((value >>> 18) & 0x07) | 0xf0;
+						target[at++] = ((value >>> 12) & 0x3f) | 0x80;
+						target[at++] = ((value >>>  6) & 0x3f) | 0x80;
+					} else {
+						continue;  // out of range
+					}
+
+					target[at++] = (value & 0x3f) | 0x80;
+				}
+
+				// Use subarray if slice isn't supported (IE11). This will use more memory
+				// because the original array still exists.
+				return target.slice ? target.slice(0, at) : target.subarray(0, at);
+			};
+
+			return GLibTextEncoder;
+		};
+		if (!global.TextEncoder) {
+			global.TextEncoder = polyfillTextEncoder();
+		}
+		const polyfillTextDecoder = () => {
+			// Shameless plug from https://github.com/samthor/fast-text-encoding/blob/master/text.js
+			/**
+			 * @constructor
+			 * @param {string=} utfLabel
+			 * @param {{fatal: boolean}=} options
+			 */
+			function GLibTextDecoder(utfLabel='utf-8', options={fatal: false}) {
+				if (!(this instanceof GLibTextDecoder)) {
+					throw TypeError('Called as a function. Did you forget \'new\'?');
+				}
+
+				Object.defineProperty(GLibTextDecoder.prototype, 'encoding', {value: utfLabel});
+
+				if (options.fatal) {
+					throw new Error(`Failed to construct 'TextDecoder': the 'fatal' option is unsupported.`);
+				}
+			}
+
+			Object.defineProperty(GLibTextDecoder.prototype, 'fatal', {value: false});
+
+			Object.defineProperty(GLibTextDecoder.prototype, 'ignoreBOM', {value: false});
+
+			let decodeImpl = (bytes) => {
+				let res = GLib.convert(bytes, GLibTextDecoder.encoding, "utf-16");
+				return new ByteArray.ByteArray(res.return_value).toString();
+			};
+			/**
+			 * @param {(!ArrayBuffer|!ArrayBufferView)} buffer
+			 * @param {{stream: boolean}=} options
+			 * @return {string}
+			 */
+			GLibTextDecoder.prototype['decode'] = function(buffer, options={stream: false}) {
+				if (options['stream']) {
+					throw new Error(`Failed to decode: the 'stream' option is unsupported.`);
+				}
+
+				let bytes;
+
+				if (buffer instanceof Uint8Array) {
+					// Accept Uint8Array instances as-is.
+					bytes = buffer;
+				} else if (buffer.buffer instanceof ArrayBuffer) {
+					// Look for ArrayBufferView, which isn't a real type, but basically
+					// represents all the valid TypedArray types plus DataView. They all have
+					// ".buffer" as an instance of ArrayBuffer.
+					bytes = new Uint8Array(buffer.buffer);
+				} else {
+					// The only other valid argument here is that "buffer" is an ArrayBuffer.
+					// We also try to convert anything else passed to a Uint8Array, as this
+					// catches anything that's array-like. Native code would throw here.
+					bytes = new Uint8Array(buffer);
+				}
+
+				return decodeImpl(/** @type {!Uint8Array} */ (bytes));
+			};
+			return GLibTextDecoder;
+		};
+
+		if (!global.TextDecoder) {
+			global.TextDecoder = polyfillTextDecoder();
+		}
+	}
+
+	if (!global.require && typeof require !== "undefined") {
+		global.require = require;
+	}
+
+	if (!global.fs && global.require) {
+		const fs = require("fs");
+		if (typeof fs === "object" && fs !== null && Object.keys(fs).length !== 0) {
+			global.fs = fs;
+		}
+	}
+
+	const enosys = () => {
+		const err = new Error("not implemented");
+		err.code = "ENOSYS";
+		return err;
+	};
+
+	if (!global.fs) {
+		global.fs = polyfillFilesystem();
+	}
+
 	if (!global.process) {
 		global.process = {
 			getuid() { return -1; },
@@ -114,7 +304,7 @@
 	if (!global.performance) {
 		global.performance = {
 			now() {
-				const [sec, nsec] = process.hrtime();
+				const [sec, nsec] = global.process.hrtime();
 				return sec * 1000 + nsec / 1000000;
 			},
 		};
@@ -130,8 +320,8 @@
 
 	// End of polyfills for common API.
 
-	const encoder = new TextEncoder("utf-8");
-	const decoder = new TextDecoder("utf-8");
+	const encoder = new global.TextEncoder("utf-8");
+	const decoder = new global.TextDecoder("utf-8");
 
 	global.Go = class {
 		constructor() {
@@ -245,7 +435,7 @@
 				return decoder.decode(new DataView(this._inst.exports.mem.buffer, saddr, len));
 			}
 
-			const timeOrigin = Date.now() - performance.now();
+			const timeOrigin = Date.now() - global.performance.now();
 			this.importObject = {
 				go: {
 					// Go's SP does not change as long as no Go code is running. Some operations (e.g. calls, getters and setters)
@@ -570,9 +760,9 @@
 		}
 
 		const go = new Go();
-		go.argv = process.argv.slice(2);
-		go.env = Object.assign({ TMPDIR: require("os").tmpdir() }, process.env);
-		go.exit = process.exit;
+		go.argv = global.process.argv.slice(2);
+		go.env = Object.assign({ TMPDIR: require("os").tmpdir() }, global.process.env);
+		go.exit = global.process.exit;
 		WebAssembly.instantiate(fs.readFileSync(process.argv[2]), go.importObject).then((result) => {
 			process.on("exit", (code) => { // Node.js exits if no event handler is pending
 				if (code === 0 && !go.exited) {
@@ -588,3 +778,11 @@
 		});
 	}
 })();
+
+var Go;
+
+// GJS needs explicit wiring
+if (typeof imports !== "undefined" && typeof imports.misc !== "undefined" &&
+	typeof imports.misc.extensionUtils !== "undefined") {
+	Go = global.Go;
+}
