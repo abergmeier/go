@@ -76,6 +76,7 @@
 		typeof imports.misc.extensionUtils !== "undefined") {
 		const ExtensionUtils = imports.misc.extensionUtils;
 		const Me = ExtensionUtils.getCurrentExtension();
+		const GLib = imports.gi.GLib;
 		if (typeof require !== "undefined") {
 			require = (moduleName) => {
 				return Me.imports[moduleName]
@@ -99,6 +100,14 @@
 		}
 		if (!global.fs) {
 			global.fs = polyfillFilesystem()
+		}
+
+		if (!global.performance) {
+			global.performance = {
+				now() {
+					return GLib.get_monotonic_time();
+				},
+			};
 		}
 		const polyfillTextEncoder = () => {
 			// Shameless plug from https://github.com/samthor/fast-text-encoding/blob/master/text.js
@@ -181,7 +190,6 @@
 			return GLibTextEncoder;
 		};
 		if (!global.TextEncoder) {
-			const GLib = imports.gi.GLib;
 			global.TextEncoder = polyfillTextEncoder();
 			TextEncoder = global.TextEncoder;
 		}
@@ -245,7 +253,6 @@
 		};
 
 		if (!global.TextDecoder) {
-			const GLib = imports.gi.GLib;
 			global.TextDecoder = polyfillTextDecoder();
 			TextDecoder = global.TextDecoder;
 		}
